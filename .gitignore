@@ -168,5 +168,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+/data/*
 
 # End of https://www.gitignore.io/api/c++,macos,python
