@@ -1,7 +1,9 @@
 import sim
+import math
 import numpy as np
 import utils
 import os
+from data_utils import get_pose_mat
 
 
 class VrepRobot:
@@ -20,13 +22,16 @@ class VrepRobot:
         self.clientID = sim.simxStart('127.0.0.1', 19999, True, True, 5000, 5)
         assert self.clientID != -1, "Failed to connect to simulation server."
 
+        self.obj_handle = None
+
         assert os.path.isdir(os.path.dirname(data_root))
         if not os.path.isdir(data_root):
             os.makedirs(data_root)
+
         self.data_root = data_root
-        self.im_path = os.path.join(self.data_root, 'rgb', 'rgb_{}.png')
-        self.depth_path = os.path.join(self.data_root, 'depth', 'depth_{}')
-        self.frame_info_path = os.path.join(self.data_root, 'frame', 'frame_{}.json')
+        self.im_path = os.path.join(self.data_root, 'rgb', '{}.png')
+        self.depth_path = os.path.join(self.data_root, 'depth', '{}')
+        self.frame_info_path = os.path.join(self.data_root, 'frame', '{}.json')
         self.meta_path = os.path.join(self.data_root, 'meta.json')
 
         self.frame_info_list = []
@@ -50,8 +55,8 @@ class VrepRobot:
         color_img[color_img < 0] += 1
         color_img *= 255
         # FIXME: whether need to flip?
-        # color_img = np.fliplr(color_img)
-        color_img = np.flipud(color_img)
+        color_img = np.fliplr(color_img)
+        # color_img = np.flipud(color_img)
         color_img = color_img.astype(np.uint8)
 
         # Get depth image from simulation
@@ -60,8 +65,8 @@ class VrepRobot:
         depth_img = np.asarray(depth_buffer)
         # FIXME: whether need to flip?
         depth_img.shape = (resolution[1], resolution[0])
-        # depth_img = np.fliplr(depth_img)
-        depth_img = np.flipud(depth_img)
+        depth_img = np.fliplr(depth_img)
+        # depth_img = np.flipud(depth_img)
         zNear = 0.01
         zFar = 10
         depth_img = depth_img * (zFar - zNear) + zNear
@@ -80,6 +85,17 @@ class VrepRobot:
         sim_ret, self.robot_handle = sim.simxGetObjectHandle(self.clientID, self.robot_name, sim.simx_opmode_blocking)
 
     def setup_sim_cameras(self, cam_names=None):
+        def _get_K(resolution):
+            width, height = resolution
+            view_angle = (54.70 / 180) * math.pi
+            fx = (width / 2.) / math.tan(view_angle / 2)
+            fy = fx
+            cx = width / 2.
+            cy = height / 2.
+
+            cam_intrinsics_andyzeng = np.asarray([[618.62, 0, 320], [0, 618.62, 240], [0, 0, 1]])
+            cam_intrinsics = np.asarray([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
+            return cam_intrinsics_andyzeng
         if cam_names is None:
             cam_names = self.cam_names
 
@@ -89,26 +105,24 @@ class VrepRobot:
         for cam_name in cam_names:
             sim_ret, cam_handle = sim.simxGetObjectHandle(self.clientID, cam_name,
                                                           sim.simx_opmode_blocking)
+
+            _, resolution, _ = sim.simxGetVisionSensorImage(self.clientID, cam_handle, 0,
+                                                                          sim.simx_opmode_blocking)
+            cam_intrinsic = _get_K(resolution)
+
             # Get camera pose and intrinsics in simulation
             sim_ret, cam_position = sim.simxGetObjectPosition(self.clientID, cam_handle, -1,
                                                               sim.simx_opmode_blocking)
-            sim_ret, cam_orientation = sim.simxGetObjectOrientation(self.clientID, cam_handle, -1,
+            sim_ret, cam_quat = sim.simxGetObjectQuaternion(self.clientID, cam_handle, -1,
                                                                     sim.simx_opmode_blocking)
-            cam_trans = np.eye(4, 4)
-            cam_trans[0:3, 3] = np.asarray(cam_position)
-            cam_orientation = [-cam_orientation[0], -cam_orientation[1], -cam_orientation[2]]
-            cam_rotm = np.eye(4, 4)
+            cam_pose = get_pose_mat(cam_position, cam_quat)
 
-            cam_rotm[0:3, 0:3] = np.linalg.inv(utils.euler2rotm(cam_orientation))
-
-            cam_pose = np.dot(cam_trans, cam_rotm)  # Compute rigid transformation representating camera pose
-            cam_intrinsics = np.asarray([[618.62, 0, 320], [0, 618.62, 240], [0, 0, 1]])
             cam_depth_scale = 1
             cam_info_dict = {
                 'name': cam_name,
                 'handle': cam_handle,
                 'pose': cam_pose.tolist(),
-                'intrinsics': cam_intrinsics.tolist(),
+                'intrinsics': cam_intrinsic.tolist(),
                 'depth_scale': cam_depth_scale
             }
             self.camera_dicts[cam_name] = cam_info_dict
@@ -116,8 +130,7 @@ class VrepRobot:
     def get_robot_pose(self):
         assert self.robot_handle is not None, "Robot handler isn't set"
         sim_ret, position = sim.simxGetObjectPosition(self.clientID, self.robot_handle, -1, sim.simx_opmode_blocking)
-        sim_ret, orientation = sim.simxGetObjectOrientation(self.clientID, self.robot_handle, -1, sim.simx_opmode_blocking)
-        # parse to matrix if needed
+        sim_ret, orientation = sim.simxGetObjectQuaternion(self.clientID, self.robot_handle, -1, sim.simx_opmode_blocking)
         pose = (position, orientation)
         return pose
 
@@ -128,7 +141,7 @@ class VrepRobot:
 
         target_pos, target_rot = target_pose
         sim.simxSetObjectPosition(self.clientID, self.robot_handle, -1, target_pos, sim.simx_opmode_blocking)
-        sim.simxSetObjectOrientation(self.clientID, self.robot_handle, -1, target_rot, sim.simx_opmode_blocking)
+        sim.simxSetObjectQuaternion(self.clientID, self.robot_handle, -1, target_rot, sim.simx_opmode_blocking)
 
     def _get_meta(self):
         if self.meta_data is not None:
@@ -144,6 +157,7 @@ class VrepRobot:
         timestamp = datetime.datetime.now().timestamp()
 
         meta_data = {
+            'cam_default': self.default_cam,
             'cam_info': cams_info,
             'robot_info': self.robot_handle,
             'time': timestamp
@@ -152,7 +166,7 @@ class VrepRobot:
 
     def collect_data(self):
         rgb_img, depth_img, cam_name = self.get_camera_data()
-        pos, rot = self.get_robot_pose()
+        Tow = self.get_obj_pose()
 
         rgb_path = self.im_path.format(self.frame_id)
         depth_path = self.depth_path.format(self.frame_id)
@@ -161,8 +175,7 @@ class VrepRobot:
         frame_data_dict = {
             'frame_id': self.frame_id,
             'cam_name': cam_name,
-            'robot_pos': pos,
-            'robot_rot': rot,
+            'pose': Tow.tolist(),
             'im_rgb': rgb_img,
             'im_depth': depth_img,
             'rgb': rgb_path,
@@ -218,20 +231,45 @@ class VrepRobot:
 
     def run(self):
         import datetime
-        move_z = -0.005
-        rot_y = 0
+        move_z = -0.02
+        # FIXME: find a smarter way of moving robot
         for step in range(3):
             print("start moving:{}".format(datetime.datetime.now().timestamp()))
             robot_position, robot_orientation = self.get_robot_pose()
             robot_position[2] += move_z
-            robot_orientation[1] += rot_y
             sim.simxSetObjectPosition(self.clientID, self.robot_handle, -1, robot_position, sim.simx_opmode_blocking)
-            sim.simxSetObjectOrientation(self.clientID, self.robot_handle, -1, robot_orientation, sim.simx_opmode_blocking)
+            sim.simxSetObjectQuaternion(self.clientID, self.robot_handle, -1, robot_orientation, sim.simx_opmode_blocking)
+            # self.move_obj()
             self.collect_data()
         self.close()
 
+    def get_obj(self):
+        if self.obj_handle is not None:
+            return
+        sim_ret, self.obj_handle = sim.simxGetObjectHandle(self.clientID, 'link', sim.simx_opmode_blocking)
+        sim_ret, self.joint_handle = sim.simxGetObjectHandle(self.clientID, 'UR10_link6_visible', sim.simx_opmode_blocking)
+
+    def get_obj_pose(self):
+        if self.obj_handle is None:
+            self.get_obj()
+        cam_handle = self.camera_dicts[self.default_cam]['handle']
+        sim_ret, position = sim.simxGetObjectPosition(self.clientID, self.joint_handle, -1, sim.simx_opmode_blocking)
+        sim_ret, orientation = sim.simxGetObjectQuaternion(self.clientID, self.joint_handle, -1, sim.simx_opmode_blocking)
+        Tow = get_pose_mat(position, orientation)
+        return Tow
+
+    def move_obj(self):
+        if self.obj_handle is None:
+            self.get_obj()
+
+        sim_ret, position = sim.simxGetObjectPosition(self.clientID, self.joint_handle, -1, sim.simx_opmode_blocking)
+        sim_ret, orientation = sim.simxGetObjectQuaternion(self.clientID, self.joint_handle, -1, sim.simx_opmode_blocking)
+
+        sim.simxSetObjectPosition(self.clientID, self.obj_handle, -1, position, sim.simx_opmode_blocking)
+        sim.simxSetObjectQuaternion(self.clientID, self.obj_handle, -1, orientation, sim.simx_opmode_blocking)
+
 
 if __name__ == '__main__':
-    ur_sim = VrepRobot('/Users/DeriZSY/vrep_data2', dump_rt=False)
+    ur_sim = VrepRobot('data/vrep', dump_rt=False)
     ur_sim.setup_all()
     ur_sim.run()
