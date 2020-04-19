@@ -18,7 +18,6 @@
 
 # Compiled Dynamic libraries
 #*.so
-#*.dylib
 #*.dll
 .idea
 
@@ -171,3 +170,16 @@ dmypy.json
 /data/*
 
 # End of https://www.gitignore.io/api/c++,macos,python
+__pycache__/
+.idea/
+.ipynb_checkpoints/
+*.py[cod]
+*.so
+*.orig
+*.o
+*.json
+*.pth
+*.jpg
+*.ipynb
+*.npy
+.idea
