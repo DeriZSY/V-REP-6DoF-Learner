@@ -1,0 +1,5 @@
+data_path: 'data/flying_link'  # directory to save acquired data
+dump_rt: True  # whether to dump data on-the-fly
+robot_name: ''
+cam_names: ['Vision_sensor']
+target_name: 'link6'

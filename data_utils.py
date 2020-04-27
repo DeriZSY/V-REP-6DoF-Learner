@@ -26,8 +26,9 @@ def project(xyz, K, RT):
     return xy
 
 
-def get_pose_mat(position, orientation):
+def get_pose_mat(pose):
     from transforms3d.quaternions import quat2mat
+    position, orientation = pose
     x, y, z, w = orientation
     quat_new = [w, x, y, z]
     mat_R = quat2mat(quat_new)

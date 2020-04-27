@@ -214,7 +214,7 @@ def get_vrep_data(camera_name_list, create_sub_dataset=True):
     images = []
     annotations = []
 
-    sequences = [v for v in os.listdir(_data_root) if v.startswith('custom')]
+    sequences = [v for v in os.listdir(_data_root) if v.startswith('vrep_link')]
 
     for sequence in sequences:
         data_root = os.path.join(_data_root, sequence)
@@ -257,7 +257,6 @@ def get_vrep_data(camera_name_list, create_sub_dataset=True):
             os.system('cp {} {}'.format(mask_path, mask_out_path))
             # im_anno['file_name'] = rgb_out_path
             # annotations[im_anno_dict[im_id]]['mask_path'] = mask_out_path
-
 
         np.savetxt(os.path.join(data_folder, 'fps.txt'), kpt3d)
         anno_path = anno_path = os.path.join(data_folder, 'train.json')
