@@ -6,6 +6,8 @@ import os
 from data_utils import get_pose_mat
 import argparse
 from config import make_cfg
+import copy
+import datetime
 
 
 class PoseGenerator:
@@ -13,20 +15,60 @@ class PoseGenerator:
         self.mode = 'robot' if cfg.robot_name != '' else 'link'
         self.num_steps = 0
         self.cur_step = 0
-        self.step_count = 4
+        self.step_size = 0.01
+
+        self.num_euler_step = cfg.pose_generator.num_euler_step
+        self.num_trans_step = cfg.pose_generator.num_euler_step
+
+        self.trans_bounds = [
+            cfg.pose_generator.trans_x,
+            cfg.pose_generator.trans_y,
+            cfg.pose_generator.trans_z,
+        ]
+
+        self.rot_bounds = [
+            cfg.pose_generator.euler_i,
+            cfg.pose_generator.euler_j,
+            cfg.pose_generator.euler_k,
+        ]
 
         self.trans_steps = []
         self.rot_steps = []
 
+        self.position_init = None
+        self.rot_init = None
+
         self.init()
+
+    def set_pose_init(self, pose_init):
+        position_init, rot_init = pose_init
+        self.set_pos_init(position_init)
+        self.set_rot_init(rot_init)
+
+    def set_pos_init(self, position_init):
+        assert len(position_init) == 3, f"Error dimension for pose init:{position_init}"
+        self.position_init = position_init
+
+    def set_rot_init(self, rot_init):
+        assert len(rot_init) == 3 or len(rot_init) == 4, f"Error dimension for rot init:{rot_init}"
+        self.rot_init = rot_init
+
+    @staticmethod
+    def get_bounded_grid(bound_x, bound_y, bound_z, step_count):
+        meshgrids = []
+        for x_iter in np.linspace(bound_x[0], bound_x[1], step_count):
+            for y_iter in np.linspace(bound_y[0], bound_y[1], step_count):
+                for z_iter in np.linspace(bound_z[0], bound_z[1], step_count):
+                    meshgrids.append([x_iter, y_iter, z_iter])
+
+        return meshgrids
 
     def init(self):
         if self.mode == 'robot':
-            space_mat = []
-            for z_iter in range(self.step_count):
-                for y_iter in range(self.step_count):
-                    for x_iter in range(self.step_count):
-                        space_mat.append([x_iter, y_iter, z_iter])
+
+            trans_steps = self.get_bounded_grid([0, self.num_trans_step-1], [0, self.num_trans_step-1],
+                                                [0, self.num_trans_step-1], self.num_trans_step)
+            self.trans_steps = np.array(trans_steps) * self.step_size
 
             rot_steps = [
                 [-0.6698113083839417, -0.7309706807136536, 0.09623405337333679, -0.08818229287862778],
@@ -45,11 +87,31 @@ class PoseGenerator:
                 [-0.6719654202461243, -0.7216885089874268, 0.1592566967010498, -0.04766680672764778],
             ]
             rot_steps = np.array(rot_steps)
-            self.trans_steps = space_mat
+
             self.rot_steps = (rot_steps - rot_steps[0])
-            self.num_steps = self.step_count ** 3 * len(rot_steps)
+            self.num_steps = len(self.trans_steps) * len(rot_steps)
         elif self.mode == 'link':
-            pass
+            assert len(self.trans_bounds) == 3, \
+                f"Error length for translation bounds, expecting 3 but get:{len(self.trans_bounds)}"
+            trans_x, trans_y, trans_z = self.trans_bounds
+            trans_steps = self.get_bounded_grid(trans_x, trans_y, trans_z, self.num_trans_step)
+            self.trans_steps = np.array(trans_steps)
+
+            assert len(self.rot_bounds) == 3, \
+                f"Error length for rotation bounds, expecting 3 but get:{len(self.rot_bounds)}"
+            rot_i, rot_j, rot_k = self.rot_bounds
+            rot_steps = self.get_bounded_grid(rot_i, rot_j, rot_k, self.num_euler_step)
+            # FIXME: dirt fix for invalid rotations
+            weak_remove_ids = [5, 8, 9]
+            remove_ids = [6, 18, 19, 20, 21, 22, 25, 26]
+            rot_steps_clean = []
+            for id, rot_step in enumerate(rot_steps):
+                if id not in remove_ids:
+                    rot_steps_clean.append(rot_step)
+            rot_steps = rot_steps_clean
+
+            self.rot_steps = np.array(rot_steps)
+            self.num_steps = len(self.trans_steps) * len(self.rot_steps)
         else:
             raise NotImplementedError(f"Required type:{self.mode} not implemented at the moment")
 
@@ -58,7 +120,7 @@ class PoseGenerator:
 
     def _step_mapping(self):
         step_trans = math.floor(self.cur_step / len(self.rot_steps))
-        setp_rot = math.floor(self.cur_step % self.step_count)
+        setp_rot = math.floor(self.cur_step %  len(self.rot_steps))
         return step_trans, setp_rot
 
     def curr_step(self):
@@ -70,7 +132,10 @@ class PoseGenerator:
             trans = self.trans_steps[trans_id]
             rot = self.rot_steps[rot_id]
             self.cur_step += 1
-            return trans, rot
+            if self.position_init is not None and self.rot_init is not None:
+                return trans + self.position_init, rot + self.rot_init
+            else:
+                return trans, rot
         else:
             raise StopIteration
 
@@ -85,6 +150,7 @@ class VrepRobot(object):
         self.frame_id = 0
 
         self.pose_generator = pose_generator
+        self.use_additive_pose = cfg.pose_generator.use_additive
         self.robot_name = cfg.robot_name if cfg.robot_name != '' else None
         self.target_name = cfg.target_name if cfg.target_name != '' else None
         self.default_cam = cfg.default_cam if cfg.default_cam != '' else None
@@ -110,18 +176,20 @@ class VrepRobot(object):
         self.frame_info_path = os.path.join(self.data_root, 'frame', '{}.json')
         self.meta_path = os.path.join(self.data_root, 'meta.json')
 
-    def get_camera_data(self, cam_info):
-        # if cam_info is None:
-        #     cam_info = self.camera_dicts[self.default_cam]
-        # elif cam_info is not None and isinstance(cam_info, str):
-        #     cam_info = self.camera_dicts[cam_info]
+    def get_camera_data(self, cam_info, need_depth=False):
 
         assert isinstance(cam_info, dict), "Error, camera info dict not found, cannot obtain image..."
 
         # Get color image from simulation
         cam_handle = cam_info['handle']
+
         sim_ret, resolution, raw_image = sim.simxGetVisionSensorImage(self.clientID, cam_handle, 0,
                                                                       sim.simx_opmode_blocking)
+
+        while len(resolution) <= 1:
+            sim_ret, resolution, raw_image = sim.simxGetVisionSensorImage(self.clientID, cam_handle, 0,
+                                                                          sim.simx_opmode_blocking)
+
         color_img = np.asarray(raw_image)
         color_img.shape = (resolution[1], resolution[0], 3)
         color_img = color_img.astype(np.float) / 255
@@ -132,20 +200,23 @@ class VrepRobot(object):
         # color_img = np.flipud(color_img)
         color_img = color_img.astype(np.uint8)
 
-        # Get depth image from simulation
-        sim_ret, resolution, depth_buffer = sim.simxGetVisionSensorDepthBuffer(self.clientID, cam_handle,
-                                                                               sim.simx_opmode_blocking)
-        depth_img = np.asarray(depth_buffer)
-        # FIXME: whether need to flip?
-        depth_img.shape = (resolution[1], resolution[0])
-        depth_img = np.fliplr(depth_img)
-        # depth_img = np.flipud(depth_img)
-        zNear = 0.01
-        zFar = 10
-        depth_img = depth_img * (zFar - zNear) + zNear
+        if need_depth:
+            # Get depth image from simulation
+            sim_ret, resolution, depth_buffer = sim.simxGetVisionSensorDepthBuffer(self.clientID, cam_handle,
+                                                                                   sim.simx_opmode_blocking)
+            depth_img = np.asarray(depth_buffer)
+            depth_img.shape = (resolution[1], resolution[0])
+            depth_img = np.fliplr(depth_img)
+            # depth_img = np.flipud(depth_img)
+            zNear = 0.01
+            zFar = 10
+            depth_img = depth_img * (zFar - zNear) + zNear
 
-        depth_scale = cam_info['depth_scale']
-        depth_img = depth_img * depth_scale
+            depth_scale = cam_info['depth_scale']
+            depth_img = depth_img * depth_scale
+        else:
+            depth_img = np.array([])
+
         return color_img, depth_img, cam_info['name']
 
     def setup_all(self):
@@ -204,11 +275,15 @@ class VrepRobot(object):
             }
             self.camera_dicts[cam_name] = cam_info_dict
 
-    def _get_pose(self, obj_handle):
+    def _get_pose(self, obj_handle, use_quat=True):
         assert obj_handle is not None, "Object handler isn't set"
         sim_ret, position = sim.simxGetObjectPosition(self.clientID, obj_handle, -1, sim.simx_opmode_blocking)
-        sim_ret, orientation = sim.simxGetObjectQuaternion(self.clientID, obj_handle, -1, sim.simx_opmode_blocking)
-        pose = (position, orientation)
+        if use_quat:
+            sim_ret, orientation = sim.simxGetObjectQuaternion(self.clientID, obj_handle, -1, sim.simx_opmode_blocking)
+        else:
+            sim_ret, orientation = sim.simxGetObjectOrientation(self.clientID, obj_handle, -1, sim.simx_opmode_blocking)
+
+        pose = (np.array(position), np.array(orientation))
         return pose
 
     def _set_pose(self, obj_handle, target_pose):
@@ -218,14 +293,16 @@ class VrepRobot(object):
 
         target_pos, target_rot = target_pose
         sim.simxSetObjectPosition(self.clientID, obj_handle, -1, target_pos, sim.simx_opmode_blocking)
-        sim.simxSetObjectQuaternion(self.clientID, obj_handle, -1, target_rot, sim.simx_opmode_blocking)
+        if len(target_rot) == 4:
+            sim.simxSetObjectQuaternion(self.clientID, obj_handle, -1, target_rot, sim.simx_opmode_blocking)
+        elif len(target_rot) == 3:
+            sim.simxSetObjectOrientation(self.clientID, obj_handle, -1, target_rot, sim.simx_opmode_blocking)
+        import time
+        time.sleep(0.1)
 
     def _get_meta(self):
         if self.meta_data is not None:
             return
-
-        import copy
-        import datetime
 
         cams_info = copy.deepcopy(self.camera_dicts)
         for cam in cams_info.keys():
@@ -319,25 +396,27 @@ class VrepRobot(object):
 
     def run(self):
         # get current pose of target
-        position, orientation = self._get_pose(self.robot_handle)
-        rot_init = orientation
-        for next_pose in self.pose_generator:
+        if self.use_additive_pose:
+            self.pose_generator.set_pose_init(self._get_pose(self.robot_handle, use_quat=True))
+
+        for num_iter, next_pose in (enumerate(self.pose_generator)):
             trans_step, rot_step = next_pose
-            self._set_pose(self.robot_handle, (position+trans_step, rot_init+rot_step))
+            self._set_pose(self.robot_handle, (trans_step, rot_step))
             self.collect_data()
         self.close()
 
     def get_test_pose(self, target_obj_name):
-        if self.obj_handle is None:
-            sim_ret, self.robot_handle = sim.simxGetObjectHandle(self.clientID, target_obj_name, sim.simx_opmode_blocking)
-        sim_ret, orientation = sim.simxGetObjectQuaternion(self.clientID, self.obj_handle, -1, sim.simx_opmode_blocking)
+        # if self.obj_handle is None:
+        sim_ret, target_handle = sim.simxGetObjectHandle(self.clientID, target_obj_name, sim.simx_opmode_blocking)
+        sim_ret, orientation = sim.simxGetObjectOrientation(self.clientID, target_handle, -1, sim.simx_opmode_blocking)
+        sim_ret, quat = sim.simxGetObjectQuaternion(self.clientID, target_handle, -1, sim.simx_opmode_blocking)
         return orientation
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cfg_file", default="configs/lnikOnly.yaml", type=str)
-    parser.add_argument("--data_root", default="data/vrep_link", type=str)
+    parser.add_argument("--cfg_file", default="configs/UR.yaml", type=str)
+    parser.add_argument("--data_root", default="", type=str)
     parser.add_argument("--dump_rt", default=True, type=bool)
     parser.add_argument("opts", default=None, nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -349,5 +428,5 @@ if __name__ == '__main__':
     ur_sim.run()
 
     # while(True):
-    #     key = input()
-    #     print("{}".format(ur_sim.get_test_pose('link6')))
+        # key = input()
+        # print("{}".format(ur_sim.get_test_pose('UR10_link6_visible')))

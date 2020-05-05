@@ -167,35 +167,6 @@ def run_net_utils():
     torch.save(pretrained_model, model_path)
 
 
-def run_linemod():
-    from lib.datasets.linemod import linemod_to_coco
-    linemod_to_coco.linemod_to_coco(cfg)
-
-
-def run_tless():
-    from lib.datasets.tless import handle_rendering_data, fuse, handle_test_data, handle_ag_data, tless_to_coco
-    # handle_rendering_data.render()
-    # handle_rendering_data.render_to_coco()
-    # handle_rendering_data.prepare_asset()
-
-    # fuse.fuse()
-    # handle_test_data.get_mask()
-    # handle_test_data.test_to_coco()
-    handle_test_data.test_pose_to_coco()
-
-    # handle_ag_data.ag_to_coco()
-    # handle_ag_data.get_ag_mask()
-    # handle_ag_data.prepare_asset()
-
-    # tless_to_coco.handle_train_symmetry_pose()
-    # tless_to_coco.tless_train_to_coco()
-
-
-def run_ycb():
-    from lib.datasets.ycb import handle_ycb
-    handle_ycb.collect_ycb()
-
-
 def run_render():
     from lib.utils.renderer import opengl_utils
     from lib.utils.vsd import inout

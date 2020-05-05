@@ -5,7 +5,7 @@ from PIL import Image
 import data_utils
 import json
 from plyfile import PlyData
-from data_utils import get_bbox2d
+from data_utils import get_bbox2d, check_kp_bound
 
 
 # Hand-craft 3d keypoint definition
@@ -93,7 +93,7 @@ def get_model_corners(model):
     return corners_3d
 
 
-def record_ann(model_meta, img_id, ann_id, images, annotations, generate_mask=True):
+def record_ann(model_meta, img_id, ann_id, images, annotations, render_mask=True):
     data_root = model_meta['data_root']
     corner_3d = model_meta['corner_3d']
     center_3d = model_meta['center_3d']
@@ -106,9 +106,12 @@ def record_ann(model_meta, img_id, ann_id, images, annotations, generate_mask=Tr
     if not os.path.isdir(os.path.dirname(mask_dir)):
         os.makedirs(os.path.dirname(mask_dir))
 
-    inds = range(len(os.listdir(rgb_dir)))
+    rgb_files = os.listdir(rgb_dir)
+    rgb_files = [fname for fname in rgb_files if '.png' in fname]
+    global vis_iter
+    inds = range(len(rgb_files))
 
-    if generate_mask:
+    if render_mask:
         from render_utils import RenderingEngine
         for cam_name in cam_info.keys():
             model_path = model_meta['model_path']
@@ -136,7 +139,6 @@ def record_ann(model_meta, img_id, ann_id, images, annotations, generate_mask=Tr
         img_size = rgb.size
         img_id += 1
         info = {'file_name': rgb_path, 'height': img_size[1], 'width': img_size[0], 'id': img_id}
-        images.append(info)
 
         # Get metadata & annotations
         Tcw = np.array(cam_info[cam_name]['pose'])
@@ -148,8 +150,12 @@ def record_ann(model_meta, img_id, ann_id, images, annotations, generate_mask=Tr
         fps_2d = data_utils.project(fps_3d, K, pose_Toc)
         box = get_bbox2d(corner_2d, rgb.size[0], rgb.size[1])
 
+        invalid_count = check_kp_bound(fps_2d, rgb.size[0], rgb.size[1])
+        if invalid_count > fps_3d.shape[0] * 0.2:
+            continue
+
         mask_path = ''
-        if generate_mask:
+        if render_mask:
             render_engine = cam_info[cam_name]['render_engine']
             import cv2
             c, d = render_engine.render_depth(pose_Toc, need_color=True, convert=True)
@@ -157,6 +163,8 @@ def record_ann(model_meta, img_id, ann_id, images, annotations, generate_mask=Tr
             mask[np.where(d != 0)] = 255
             mask_path = mask_dir.format(ind)
             cv2.imwrite(mask_path, mask)
+        else:
+            mask = None
 
         vis(rgb, model_2d=None, corner_2d=None, draw_box=False, kpt2d=fps_2d, bbox2d=None, mask=mask)
 
@@ -168,24 +176,46 @@ def record_ann(model_meta, img_id, ann_id, images, annotations, generate_mask=Tr
         anno.update({'fps_3d': fps_3d.tolist(), 'fps_2d': fps_2d.tolist()})
         anno.update({'K': K.tolist(), 'pose': pose_Toc.tolist()})
         anno.update({'bbox': box, 'type': 'real', 'cls': 'guo'})
+
+        # Append annotation
+        images.append(info)
         annotations.append(anno)
 
     return img_id, ann_id
 
 
-def _get_vrep_data(data_root, img_id, ann_id, images, annotations, cam_name_list=None):
-    meta = json.load(open(os.path.join(data_root, 'meta.json'), 'r'))
+def _get_vrep_data(data_root, img_id, ann_id, images, annotations, cam_name_list=None, render_mask=True):
+    """
+    Generate data annotation files for dataset in the given path
+    :param data_root: data directory, should include subdirectories [frame, rgb, 'meta.json']
+    :param img_id: current image id, will be none zero and matters
+        only when generating  one annotation file for more than one data folder
+    :param ann_id: current annotation id, will be none zero and matters
+        only when generating  one annotation file for more than one data folder
+    :param images: array to store image information, will be none empty and matters
+        only when generating  one annotation file for more than one data folder
+    :param annotations: array to store annotations, will be none empty and matters
+        only when generating  one annotation file for more than one data folder
+    :param cam_name_list: list of camera names to be used, ['ALL'] means use all cameras available
+    :param render_mask: whether or not to render mask with pyrender
+    :return:
+    """
 
+    # Obtain meta information
+    meta = json.load(open(os.path.join(data_root, 'meta.json'), 'r'))
     cam_info = meta['cam_info']
 
     # remove invalid sensor
     if cam_name_list is not None:
-        pop_list = []
-        for cam_name in cam_info.keys():
-            if cam_name not in cam_name_list:
-                pop_list.append(cam_name)
-        for cam_name in pop_list:
-            cam_info.pop(cam_name)
+        if cam_name_list[0] == 'ALL':
+            cam_name_list = list(cam_info.keys())
+        else:
+            pop_list = []
+            for cam_name in cam_info.keys():
+                if cam_name not in cam_name_list:
+                    pop_list.append(cam_name)
+            for cam_name in pop_list:
+                cam_info.pop(cam_name)
 
     model = read_ply_points(os.path.join(data_root, 'model.ply'))
     model_path = os.path.join(data_root, 'model.ply')
@@ -202,11 +232,20 @@ def _get_vrep_data(data_root, img_id, ann_id, images, annotations, cam_name_list
         'model_path': model_path,
     }
 
-    img_id, ann_id = record_ann(model_meta, img_id, ann_id, images, annotations)
+    # process the frames to generate annotations and image information
+    img_id, ann_id = record_ann(model_meta, img_id, ann_id, images, annotations, render_mask=render_mask)
     return img_id, ann_id
 
 
-def get_vrep_data(camera_name_list, create_sub_dataset=True):
+def get_vrep_data(camera_name_list, create_sub_dataset=True, render_mask=True):
+    """
+    Generate data for VREP
+    :param camera_name_list: list of camera names to use.
+        set to ['ALL'] if you want to use all camera
+    :param create_sub_dataset: whether or not to make data obtained from each camera
+        as subdirectory
+    :param render_mask: whether or not to render mask with pyrender (dsiable it if pygl is not valid)
+    """
     _data_root = 'data'
 
     img_id = 0
@@ -214,21 +253,22 @@ def get_vrep_data(camera_name_list, create_sub_dataset=True):
     images = []
     annotations = []
 
-    sequences = [v for v in os.listdir(_data_root) if v.startswith('vrep_link')]
+    sequences = [v for v in os.listdir(_data_root) if v.startswith('vrep_clean_link')]
 
     for sequence in sequences:
         data_root = os.path.join(_data_root, sequence)
-        img_id, ann_id = _get_vrep_data(data_root, img_id, ann_id, images, annotations, camera_name_list)
+        img_id, ann_id = _get_vrep_data(data_root, img_id, ann_id, images, annotations,
+                                        camera_name_list, render_mask=render_mask)
 
+    # Sort frames from different sensor to separate sub-dataset (by sensor)
     if create_sub_dataset:
         im_anno_dict = dict()
         for anno_idx, anno in enumerate(annotations):
             im_anno_dict[anno['image_id']] = anno_idx
 
-        data_folder = os.path.join(data_root, 'sub_dataset')
-
+        data_folder = os.path.join(data_root, 'subset_')
         for cam_name in cam_name_list:
-            data_folder += '_' + cam_name[-1]
+            data_folder += '_' + cam_name
         if os.path.isdir(data_folder):
             os.system('rm -r {}'.format(data_folder))
         os.system('mkdir -p {}'.format(data_folder))
@@ -255,11 +295,9 @@ def get_vrep_data(camera_name_list, create_sub_dataset=True):
 
             os.system('cp {} {}'.format(rgb_path, rgb_out_path))
             os.system('cp {} {}'.format(mask_path, mask_out_path))
-            # im_anno['file_name'] = rgb_out_path
-            # annotations[im_anno_dict[im_id]]['mask_path'] = mask_out_path
 
         np.savetxt(os.path.join(data_folder, 'fps.txt'), kpt3d)
-        anno_path = anno_path = os.path.join(data_folder, 'train.json')
+        anno_path = os.path.join(data_folder, 'train.json')
 
         categories = [{'supercategory': 'none', 'id': 1, 'name': 'ur'}]
         instance = {'images': images, 'annotations': annotations, 'categories': categories}
@@ -276,5 +314,5 @@ def get_vrep_data(camera_name_list, create_sub_dataset=True):
 
 
 if __name__ == "__main__":
-    cam_name_list = ['Vision_sensor']
-    get_vrep_data(cam_name_list)
+    cam_name_list = ['ALL']
+    get_vrep_data(cam_name_list, create_sub_dataset=False, render_mask=False)

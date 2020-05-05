@@ -9,9 +9,12 @@ import torch.multiprocessing
 best_add = 0.0
 curr_add = 0.0
 
-def train(cfg, network):
+
+def train(cfg):
     if cfg.train.dataset[:4] != 'City':
         torch.multiprocessing.set_sharing_strategy('file_system')
+
+    network = make_network(cfg)
     trainer = make_trainer(cfg, network)
     optimizer = make_optimizer(cfg, network)
     scheduler = make_lr_scheduler(cfg, optimizer)
@@ -21,9 +24,8 @@ def train(cfg, network):
     begin_epoch = load_model(network, optimizer, scheduler, recorder, cfg.model_dir, resume=cfg.resume)
     # set_lr_scheduler(cfg, scheduler)
 
-    train_loader = make_data_loader(cfg, is_train=True, max_iter=cfg.ep_iter)
-    val_loader = make_data_loader(cfg, is_train=False)
-    # train_loader = make_data_loader(cfg, is_train=True, max_iter=100)
+    train_loader = make_data_loader(cfg, is_train=True, is_distributed=cfg.distributed, max_iter=cfg.ep_iter)
+    val_loader = make_data_loader(cfg, is_train=False, is_distributed=cfg.distributed)
 
     for epoch in range(begin_epoch, cfg.train.epoch):
         recorder.epoch = epoch
@@ -43,7 +45,8 @@ def train(cfg, network):
     return network
 
 
-def test(cfg, network):
+def test(cfg):
+    network = make_network(cfg)
     trainer = make_trainer(cfg, network)
     val_loader = make_data_loader(cfg, is_train=False)
     evaluator = make_evaluator(cfg)
@@ -52,11 +55,10 @@ def test(cfg, network):
 
 
 def main():
-    network = make_network(cfg)
     if args.test:
-        test(cfg, network)
+        test(cfg)
     else:
-        train(cfg, network)
+        train(cfg)
 
 
 def run_visualize():
@@ -83,5 +85,5 @@ def run_visualize():
 
 
 if __name__ == "__main__":
-    # main()
-    run_visualize()
+    main()
+    # run_visualize()

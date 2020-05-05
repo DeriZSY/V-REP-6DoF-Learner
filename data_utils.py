@@ -27,11 +27,19 @@ def project(xyz, K, RT):
 
 
 def get_pose_mat(pose):
-    from transforms3d.quaternions import quat2mat
     position, orientation = pose
-    x, y, z, w = orientation
-    quat_new = [w, x, y, z]
-    mat_R = quat2mat(quat_new)
+    if len(orientation) == 4:
+        from transforms3d.quaternions import quat2mat
+        x, y, z, w = orientation
+        quat_new = [w, x, y, z]
+        mat_R = quat2mat(quat_new)
+    elif len(orientation) == 3:
+        from transforms3d.euler import euler2mat
+        x, y, z = orientation
+        mat_R = np.dot(np.dot(np.array(euler2mat(x, 0, 0)), np.array(euler2mat(0, y, 0))), euler2mat(0, 0, z))
+    else:
+        raise NotImplementedError
+
     pose = np.eye(4, 4)
     pose[:3, :3] = mat_R
     pose[:3, 3] = position
@@ -107,3 +115,12 @@ def get_bbox2d(corner2d, w, h):
     y_max = int(min(np.max(corner2d[:, 1]), h))
     y_min = int(max(np.min(corner2d[:, 1]), 0))
     return [x_min, y_min, x_max, y_max]
+
+
+def check_kp_bound(fps2d, w, h):
+    count = 0
+    for point in fps2d:
+        if point[0] < 0 or point[0] > w or point[1] < 0 or point[1] > h:
+            count += 1
+
+    return count

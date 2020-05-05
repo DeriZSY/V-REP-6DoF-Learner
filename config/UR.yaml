@@ -1,5 +1,8 @@
-data_path: 'data/vrep'  # directory to save acquired data
+data_root: 'data/vrep_robot'  # directory to save acquired data
 dump_rt: True  # whether to dump data on-the-fly
 robot_name: 'UR10_target'
 cam_names: ['Vision_sensor', 'Vision_sensor0', 'Vision_sensor1', 'Vision_sensor2']
 target_name: 'UR10_link6_visible'
+pose_generator:
+  use_additive: True
+  num_trans_step: 4 # Num steps to interpolate between min max

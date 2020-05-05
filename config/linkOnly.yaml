@@ -1,5 +1,16 @@
-data_path: 'data/flying_link'  # directory to save acquired data
+data_root: 'data/flying_link'  # directory to save acquired data
 dump_rt: True  # whether to dump data on-the-fly
 robot_name: ''
 cam_names: ['Vision_sensor']
-target_name: 'link6'
+#target_name: 'UR10_link6'
+target_name: 'UR10_link6_visible'
+pose_generator:
+  use_additive: False
+  trans_x: [-0.7412, 0.0662] # [min_x, max_x]
+  trans_y: [0.7738, 1.1738] # [min_y, max_y]
+  trans_z: [ 0.5978, 0.9978] # [min_z, max_z]
+  num_trans_step: 5 # Num steps to interpolate between min max
+  euler_i: [-2.8797929286956787, 0.6981311440467834] # [min, max]
+  euler_j: [-1.221771240234375, 1.2217673063278198]
+  euler_k: [-1.134463906288147, 0.26179981231689453]
+  num_euler_step: 3
