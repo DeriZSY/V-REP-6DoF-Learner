@@ -1,0 +1,15 @@
+data_root: 'data/vrep_franka_link'  # directory to save acquired data
+dump_rt: True  # whether to dump data on-the-fly
+robot_name: ''
+cam_names: ['Vision_sensor']
+target_name: 'Franka_link'
+pose_generator:
+  use_additive: False
+  trans_x: [-0.1441, +0.2089] # [min_x, max_x]
+  trans_y: [-0.2804, +0.2946] # [min_y, max_y]
+  trans_z: [+0.3199, +0.8949] # [min_z, max_z]
+  num_trans_step: 5 # Num steps to interpolate between min max
+  euler_i: [-2.8797929286956787, 0.6981311440467834] # [min, max]
+  euler_j: [-1.221771240234375, 1.2217673063278198]
+  euler_k: [-1.134463906288147, 0.26179981231689453]
+  num_euler_step: 3

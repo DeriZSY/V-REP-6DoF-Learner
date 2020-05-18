@@ -1,0 +1,11 @@
+data_root: 'data/vrep_franka_val'  # directory to save acquired data
+dump_rt: True  # whether to dump data on-the-fly
+robot_name: 'Franka_target'
+cam_names: ['Vision_sensor0',]
+target_name: 'Franka_link7'
+pose_generator:
+  use_marker: True
+  marker_trans_step: 5
+  marker_rot_step: 4
+  use_additive: False
+#  num_trans_step: 2 # Num steps to interpolate between min max

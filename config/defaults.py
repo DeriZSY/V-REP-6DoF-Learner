@@ -15,6 +15,9 @@ cfg.default_cam = ''
 # ======= pose_generator
 cfg.pose_generator = CN()
 cfg.pose_generator.use_additive = False
+cfg.pose_generator.use_marker = False
+cfg.pose_generator.marker_trans_step = 4
+cfg.pose_generator.marker_rot_step = 4
 cfg.pose_generator.trans_x = [] # [min_x, max_x]
 cfg.pose_generator.trans_y = [] # [min_y, max_y]
 cfg.pose_generator.trans_z = [] # [min_z, max_z]

@@ -8,6 +8,8 @@ import argparse
 from config import make_cfg
 import copy
 import datetime
+import json
+import time
 
 
 class PoseGenerator:
@@ -34,11 +36,16 @@ class PoseGenerator:
 
         self.trans_steps = []
         self.rot_steps = []
+        self.comb_steps = []
 
         self.position_init = None
         self.rot_init = None
 
-        self.init()
+        if cfg.pose_generator.use_marker:
+            marker_path = os.path.join(cfg.data_root, 'marker_pose.json')
+            self.init_marker(marker_path)
+        else:
+            self.init()
 
     def set_pose_init(self, pose_init):
         position_init, rot_init = pose_init
@@ -62,6 +69,13 @@ class PoseGenerator:
                     meshgrids.append([x_iter, y_iter, z_iter])
 
         return meshgrids
+
+    def init_marker(self, marker_path):
+        marker_file = json.load(open(marker_path, 'r'))
+        for marker_id in marker_file.keys():
+            pose = marker_file[marker_id]
+            self.comb_steps.append(pose)
+        self.num_steps = len(self.comb_steps)
 
     def init(self):
         if self.mode == 'robot':
@@ -103,7 +117,8 @@ class PoseGenerator:
             rot_steps = self.get_bounded_grid(rot_i, rot_j, rot_k, self.num_euler_step)
             # FIXME: dirt fix for invalid rotations
             weak_remove_ids = [5, 8, 9]
-            remove_ids = [6, 18, 19, 20, 21, 22, 25, 26]
+            # remove_ids = [6, 18, 19, 20, 21, 22, 25, 26]
+            remove_ids = []
             rot_steps_clean = []
             for id, rot_step in enumerate(rot_steps):
                 if id not in remove_ids:
@@ -116,7 +131,10 @@ class PoseGenerator:
             raise NotImplementedError(f"Required type:{self.mode} not implemented at the moment")
 
     def __iter__(self):
-        return self
+        return
+
+    def num_steps(self):
+        return self.num_steps()
 
     def _step_mapping(self):
         step_trans = math.floor(self.cur_step / len(self.rot_steps))
@@ -128,10 +146,15 @@ class PoseGenerator:
 
     def __next__(self):
         if self.cur_step < self.num_steps:
-            trans_id, rot_id = self._step_mapping()
-            trans = self.trans_steps[trans_id]
-            rot = self.rot_steps[rot_id]
+            if len(self.comb_steps) > 0:
+                trans, rot = self.comb_steps[self.cur_step]
+            else:
+                trans_id, rot_id = self._step_mapping()
+                trans = self.trans_steps[trans_id]
+                rot = self.rot_steps[rot_id]
             self.cur_step += 1
+
+            # print(f"Processing {self.cur_step}/{self.num_steps}")
             if self.position_init is not None and self.rot_init is not None:
                 return trans + self.position_init, rot + self.rot_init
             else:
@@ -164,6 +187,7 @@ class VrepRobot(object):
         self.target_handle = None
         self.frame_info_list = []
         self.meta_data = None
+        self.marker_poses = dict()
 
         # Set path for data restoration
         self.data_root = cfg.data_root
@@ -171,6 +195,7 @@ class VrepRobot(object):
         if not os.path.isdir(cfg.data_root):
             os.makedirs(cfg.data_root)
 
+        self.marker_dir = os.path.join(self.data_root, 'marker_pose.json')
         self.im_path = os.path.join(self.data_root, 'rgb', '{}.png')
         self.depth_path = os.path.join(self.data_root, 'depth', '{}')
         self.frame_info_path = os.path.join(self.data_root, 'frame', '{}.json')
@@ -399,18 +424,114 @@ class VrepRobot(object):
         if self.use_additive_pose:
             self.pose_generator.set_pose_init(self._get_pose(self.robot_handle, use_quat=True))
 
-        for num_iter, next_pose in (enumerate(self.pose_generator)):
+        from tqdm import tqdm
+        for num_iter in tqdm(range(self.pose_generator.num_steps)):
+            next_pose = self.pose_generator.__next__()
             trans_step, rot_step = next_pose
             self._set_pose(self.robot_handle, (trans_step, rot_step))
             self.collect_data()
         self.close()
 
-    def get_test_pose(self, target_obj_name):
+    def run_manual(self):
+        from tqdm import tqdm
+        for num_iter in tqdm(range(self.pose_generator.num_steps())):
+            next_pose = self.pose_generator.__next__()
+            trans_step, rot_step = next_pose
+            self._set_pose(self.robot_handle, (trans_step, rot_step))
+            self.collect_data()
+        self.close()
+
+    def move_and_collect(self, target_obj_name):
+        def get_pose():
+            sim_ret, target_handle = sim.simxGetObjectHandle(self.clientID, target_obj_name, sim.simx_opmode_blocking)
+            sim_ret, orientation = sim.simxGetObjectOrientation(self.clientID, target_handle, -1,
+                                                                sim.simx_opmode_blocking)
+            sim_ret, position = sim.simxGetObjectPosition(self.clientID, target_handle, -1, sim.simx_opmode_blocking)
+            return position, orientation
+
+        def set_pose(pos, rot):
+            sim_ret, target_handle = sim.simxGetObjectHandle(self.clientID, target_obj_name, sim.simx_opmode_blocking)
+            sim.simxSetObjectPosition(self.clientID, target_handle, -1, pos, sim.simx_opmode_blocking)
+            sim.simxSetObjectOrientation(self.clientID, target_handle, -1, rot, sim.simx_opmode_blocking)
+
+        t_mode = 1 # 1:xy 2:yz 3: xz
+        r_mode = 1 # 1: x, 2:y
+        t_step = 0.05
+        r_step = 5/180*3.14
+
+        def mod_trans(pos, cmd):
+            idx1 = 0
+            idx2 = 1
+            if t_mode == 1:
+                idx1 = 0
+                idx2 = 1
+            elif t_mode == 2:
+                idx1 = 2
+                idx2 = 1
+            elif t_mode == 3:
+                idx1 = 2
+                idx2 = 0
+
+            if cmd == 'w':
+                pos[idx1] += t_step
+            elif cmd == 's':
+                pos[idx1] -= t_step
+            elif cmd == 'a':
+                pos[idx2] -= t_step
+            elif cmd == 'd':
+                pos[idx2] += t_step
+            return pos
+
+        def mod_rot(rot, cmd):
+            idx = 0
+            if r_mode == 1:
+                idx = 0
+            elif r_mode == 2:
+                idx = 1
+
+            if cmd == 'j':
+                rot[idx] += r_step
+            elif cmd == 'k':
+                rot[idx] -= r_step
+            return rot
+
+        while True:
+            pos, rot = get_pose()
+            cmd = input()
+            if cmd == 'm':
+                t_mode += 1
+                if t_mode == 4:
+                    t_mode = 1
+            elif cmd == 'n':
+                r_mode += 1
+                if r_mode == 3:
+                    r_mode = 1
+            elif cmd in ['w', 'a', 's', 'd']:
+                pos = mod_trans(pos, cmd)
+            elif cmd == 'q':
+                break
+            else:
+                rot = mod_rot(rot, cmd)
+            set_pose(pos, rot)
+            self.check_pose(target_obj_name, mode='marker')
+
+    def check_pose(self, target_obj_name, mode='output'):
         # if self.obj_handle is None:
         sim_ret, target_handle = sim.simxGetObjectHandle(self.clientID, target_obj_name, sim.simx_opmode_blocking)
         sim_ret, orientation = sim.simxGetObjectOrientation(self.clientID, target_handle, -1, sim.simx_opmode_blocking)
+        sim_ret, position = sim.simxGetObjectPosition(self.clientID, target_handle, -1, sim.simx_opmode_blocking)
         sim_ret, quat = sim.simxGetObjectQuaternion(self.clientID, target_handle, -1, sim.simx_opmode_blocking)
-        return orientation
+        if mode == 'output':
+            print(f"trans:{position}\nrot:{quat}\n")
+        elif mode == 'marker':
+            import json
+            self.marker_poses = json.load(open(self.marker_dir, 'r'))
+            marker_id = len(list(self.marker_poses.keys()))
+            self.marker_poses[marker_id] = (position, quat)
+            json.dump(self.marker_poses, open(self.marker_dir, 'w'), indent=4)
+            # print(f"Size:{marker_id}\ntrans:{position}\nrot:{orientation}\n\n")
+        else:
+            raise NotImplementedError(f"Method not implement for mode:{mode}")
 
 
 if __name__ == '__main__':
@@ -423,10 +544,16 @@ if __name__ == '__main__':
     cfg = make_cfg(args)
 
     pose_generator = PoseGenerator(cfg)
-    ur_sim = VrepRobot(cfg, pose_generator)
-    ur_sim.setup_all()
-    ur_sim.run()
+    robot_controller = VrepRobot(cfg, pose_generator)
+    robot_controller.setup_all()
+    robot_controller.run()
 
+    # print("ready")
+    # key = input()
+    # id = 0
     # while(True):
-        # key = input()
-        # print("{}".format(ur_sim.get_test_pose('UR10_link6_visible')))
+    #     id += 1
+        # time.sleep(0.3)
+        # print(f"saving pose:{id}")
+        # ur_sim.check_pose('Franka_target', mode='marker')
+        # ur_sim.move_and_collect('Franka_target')
